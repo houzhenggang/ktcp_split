@@ -62,6 +62,7 @@ static unsigned int cbn_ingress_hook(void *priv,
 		addresses->src.sin_addr.s_addr	= iphdr->saddr;
 		addresses->dest.sin_port	= tcphdr->dest;
 		addresses->src.sin_port		= tcphdr->source;
+		addresses->mark			= skb->mark;
 		kthread_pool_run(&cbn_pool, start_new_connection_syn, addresses); //elem?
 		//1.alloc task + data
 		//2.rb_tree lookup
