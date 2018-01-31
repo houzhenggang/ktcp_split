@@ -28,17 +28,6 @@ struct pool_elem {
 	};
 };
 
-#define DEF_CBN_POOL_SIZE 16
-static struct kthread_pool cbn_pool = {.pool_size = DEF_CBN_POOL_SIZE};
-
-static void kthread_pool_free(struct kthread_pool *cbn_pool, struct task_struct *task)
-{
-	struct pool_elem *elem = container_of(kthread_data(task), struct pool_elem, _unspec);
-
-	list_add(&cbn_pool->kthread_pool, &elem->list);
-	++cbn_pool->running_count;
-}
-
 static int pipe_loop_task(void *data)
 {
 	struct pool_elem *elem = data;
@@ -51,7 +40,6 @@ static int pipe_loop_task(void *data)
 
 		pr_err("%s sleep\n", current->comm);
 		set_current_state(TASK_INTERRUPTIBLE);
-		kthread_pool_free(pool, elem->task);
 		if (!kthread_should_stop()) {
 			schedule();
 		}
@@ -64,7 +52,12 @@ static int pipe_loop_task(void *data)
 	return 0;
 }
 
-static int (*threadfn)(void *data) = pipe_loop_task;
+static int empty_task()
+{
+	return 0;
+}
+
+static int (*threadfn)(void *data) = empty_task;
 
 static inline void refill_pool(struct kthread_pool *cbn_pool, int count)
 {
@@ -87,66 +80,53 @@ static inline void refill_pool(struct kthread_pool *cbn_pool, int count)
 	}
 }
 
-static void set_function( struct kthread_pool *pool,
-			void (*pool_task)(void *data))
+#define LOOP 1000
+
+static inline u64 barr(void)
 {
-	pool->pool_task = pool_task;
+	unsigned int low, high;
+
+	asm volatile ("cpuid\n\t"
+		"rdtsc\n\t"
+		"mov %%edx, %0\n\t"
+		"mov %%eax, %1\n\t": "=r" (high), "=r" (low)::
+		"%rax", "%rbx", "%rcx", "%rdx");
+	return low|(((u64)high) << 32);
 }
 
-static int refil_thread(void *data)
+static inline u64 rdtscp(void)                                                                                                                                        
 {
-	struct kthread_pool *cbn_pool = data;
+	unsigned int low, high;
 
-	while (!kthread_should_stop()) {
-		refill_pool(cbn_pool, 0);
+	asm volatile("rdtscp" : "=a" (low), "=d" (high));
 
-		set_current_state(TASK_INTERRUPTIBLE);
-		if (!kthread_should_stop())
-			schedule();
-		__set_current_state(TASK_RUNNING);
-	}
-	pr_err("c ya...\n");
-	return 0;
-}
-
-static struct task_struct *kthread_pool_alloc(struct kthread_pool *cbn_pool)
-{
-	struct pool_elem *elem = NULL;
-
-	while (unlikely(list_empty(&cbn_pool->kthread_pool))) {
-		pr_err("pool is empty refill is to slow\n");
-		refill_pool(cbn_pool, 1);
-	}
-
-	elem = list_first_entry(&cbn_pool->kthread_pool, struct pool_elem, list);
-	--cbn_pool->running_count;
-	wake_up_process(cbn_pool->refil);
-	return elem->task;
+	return low | ((u64)high) << 32;
 }
 
 static void test(void)
 {
-	/*
-	struct list_head *itr, *tmp;
-	pr_err("test\n");
-
-	list_for_each_safe(itr, tmp, &kthread_pool) {
-		struct pool_elem *task = container_of(itr, struct pool_elem, list);
-
-		wake_up_process(task->task);
+	int count = LOOP;
+	u64 max = 0;
+	rdtscp();
+	while (count--) {
+		struct task_struct *k;
+		u64 s, e;
+		s = barr();
+		k = kthread_run(threadfn, NULL, "pool-thread-%d", count);
+		e = rdtscp();
+		max = ((e-s) > max) ? (e-s) : max;
+		if (unlikely(!k)) {
+			pr_err("failed to create kthread %d\n", count);
+			return;
+		}
 	}
-	*/
+	pr_info("loop of %d [%ld] max %lld\n", LOOP, sizeof(struct task_struct)/1024, max);
 }
 
 static int __init cbn_kthread_pool_init(void)
 {
 	pr_err("starting server_task\n");
-	INIT_LIST_HEAD(&cbn_pool.kthread_pool);
-	INIT_LIST_HEAD(&cbn_pool.kthread_running);
-	cbn_pool.pool_slab = kmem_cache_create("pool-thread-cache",
-						sizeof(struct pool_elem), 0, 0, NULL);
 
-	cbn_pool.refil = kthread_run(refil_thread, &cbn_pool, "pool-cache-refill");
 	//check for failure?
 	test();
 	return 0;
@@ -154,24 +134,7 @@ static int __init cbn_kthread_pool_init(void)
 
 static void __exit cbn_kthread_pool_clean(void)
 {
-	struct list_head *itr, *tmp;
 	pr_err("stopping server_task\n");
-
-	list_for_each_safe(itr, tmp, &cbn_pool.kthread_pool) {
-		struct pool_elem *task = container_of(itr, struct pool_elem, list);
-		list_del(itr);
-		kthread_stop(task->task);
-		kmem_cache_free(cbn_pool.pool_slab, task);
-	}
-
-	list_for_each_safe(itr, tmp, &cbn_pool.kthread_running) {
-		struct pool_elem *task = container_of(itr, struct pool_elem, list);
-		list_del(itr);
-		kthread_stop(task->task);
-		kmem_cache_free(cbn_pool.pool_slab, task);
-	}
-	kmem_cache_destroy(cbn_pool.pool_slab);
-	kthread_stop(cbn_pool.refil);
 }
 
 module_init(cbn_kthread_pool_init);
