@@ -1,4 +1,5 @@
 #include <linux/init.h>      // included for __init and __exit macros
+#include <linux/module.h>      // included for __init and __exit macros
 #include <linux/ip.h>
 #include <linux/in.h>
 #include <linux/kthread.h>
@@ -471,7 +472,7 @@ int __init cbn_datapath_init(void)
 					sizeof(struct addresses), 0, 0, NULL);
 
 	cbn_kthread_pool_init(&cbn_pool);
-	nf_register_hooks(cbn_nf_hooks, ARRAY_SIZE(cbn_nf_hooks));
+	nf_register_net_hooks(&init_net, cbn_nf_hooks, ARRAY_SIZE(cbn_nf_hooks));
 	cbn_proc_init();
 	return 0;
 }
@@ -479,7 +480,7 @@ int __init cbn_datapath_init(void)
 void __exit cbn_datapath_clean(void)
 {
 	cbn_proc_clean();
-	nf_unregister_hooks(cbn_nf_hooks,  ARRAY_SIZE(cbn_nf_hooks));
+	nf_unregister_net_hooks(&init_net, cbn_nf_hooks,  ARRAY_SIZE(cbn_nf_hooks));
 	stop_sockets();
 	pr_info("sockets stopped\n");
 	cbn_kthread_pool_clean(&cbn_pool);
